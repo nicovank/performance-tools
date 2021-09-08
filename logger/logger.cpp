@@ -37,13 +37,26 @@ public:
     Ready = true;
   }
 
-  ~Initialization() { Ready = false; }
+  ~Initialization() {
+    Ready = false;
+
+    for (auto Data : Cache) {
+      OutputFile << "{ "
+                 << "\"Address\": " << (intptr_t) Data.first << ", "
+                 << "\"Size\": " << Data.second.Size << ", "
+                 << "\"AllocationTime\": "
+                 << std::chrono::duration<double, TIME_RATIO>(Data.second.AllocationTime - ProgramStartTime).count()
+                 << ", "
+                 << "\"AllocationBacktrace\": " << Backtrace::ToJson(Data.second.AllocationBacktrace) << "}"
+                 << std::endl;
+    }
+  }
 };
 
 static Initialization _;
 
 extern "C" ATTRIBUTE_EXPORT void* malloc(size_t Size) noexcept {
-  static decltype(::malloc)* DefaultMalloc = (decltype(::malloc)*)dlsym(RTLD_NEXT, "malloc");
+  static decltype(::malloc)* DefaultMalloc = (decltype(::malloc)*) dlsym(RTLD_NEXT, "malloc");
 
   void* Pointer = (*DefaultMalloc)(Size);
 
@@ -58,16 +71,17 @@ extern "C" ATTRIBUTE_EXPORT void* malloc(size_t Size) noexcept {
 }
 
 extern "C" ATTRIBUTE_EXPORT void free(void* Pointer) {
-  static decltype(::free)* DefaultFree = (decltype(::free)*)dlsym(RTLD_NEXT, "free");
+  static decltype(::free)* DefaultFree = (decltype(::free)*) dlsym(RTLD_NEXT, "free");
 
   if (Ready && !Busy && Pointer != nullptr) {
     ++Busy;
+
     std::lock_guard<std::mutex> _(CacheLock);
     if (Cache.contains(Pointer)) {
       AllocationData Data = Cache[Pointer];
       Cache.erase(Pointer);
       OutputFile << "{ "
-                 << "\"Address\": " << (intptr_t)Pointer << ", "
+                 << "\"Address\": " << (intptr_t) Pointer << ", "
                  << "\"Size\": " << Data.Size << ", "
                  << "\"AllocationTime\": "
                  << std::chrono::duration<double, TIME_RATIO>(Data.AllocationTime - ProgramStartTime).count() << ", "
@@ -76,6 +90,7 @@ extern "C" ATTRIBUTE_EXPORT void free(void* Pointer) {
                  << std::chrono::duration<double, TIME_RATIO>(CLOCK::now() - ProgramStartTime).count() << ", "
                  << "\"FreeBacktrace\": " << Backtrace::ToJson(Backtrace::GetBacktrace()) << "}" << std::endl;
     }
+
     --Busy;
   }
 

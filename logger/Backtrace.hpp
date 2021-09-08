@@ -77,7 +77,7 @@ std::vector<StackFrame> GetBacktrace(int Skip) {
       char* Demangled = abi::__cxa_demangle(Function, nullptr, nullptr, &Status);
       if (Status == 0) {
         Frame.Function = std::string(Demangled);
-        static decltype(::free)* DefaultFree = (decltype(::free)*)dlsym(RTLD_DEFAULT, "free");
+        static decltype(::free)* DefaultFree = (decltype(::free)*) dlsym(RTLD_DEFAULT, "free");
         (*DefaultFree)(Demangled);
       } else {
         Frame.Function = std::string(Function);
