@@ -4,10 +4,13 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <random>
 #include <unordered_map>
 #include <vector>
 
 #define ATTRIBUTE_EXPORT __attribute__((visibility("default")))
+
+#define SAMPLING_RATE 512
 #define CLOCK std::chrono::steady_clock
 #define TIME_RATIO std::ratio<1, 1000>
 #define OUTPUT_FILENAME "malloc.out"
@@ -18,6 +21,12 @@ static CLOCK::time_point ProgramStartTime;
 static std::atomic_bool Ready{false};
 static thread_local int Busy{0};
 static std::ofstream OutputFile;
+
+size_t GetNextSampleCount() {
+  static std::random_device Generator;
+  static std::geometric_distribution<size_t> Distribution(1.0 / SAMPLING_RATE);
+  return Distribution(Generator);
+}
 
 struct AllocationData {
   size_t Size;
@@ -56,14 +65,19 @@ public:
 static Initialization _;
 
 extern "C" ATTRIBUTE_EXPORT void* malloc(size_t Size) noexcept {
+  static thread_local long int SamplingCount = GetNextSampleCount();
   static decltype(::malloc)* DefaultMalloc = (decltype(::malloc)*) dlsym(RTLD_NEXT, "malloc");
 
   void* Pointer = (*DefaultMalloc)(Size);
 
   if (Ready && !Busy) {
     ++Busy;
-    std::lock_guard<std::mutex> _(CacheLock);
-    Cache.emplace(Pointer, AllocationData{Size, Backtrace::GetBacktrace(), CLOCK::now()});
+    SamplingCount -= Size;
+    if (SamplingCount <= 0) {
+      SamplingCount = GetNextSampleCount();
+      std::lock_guard<std::mutex> _(CacheLock);
+      Cache.emplace(Pointer, AllocationData{Size, Backtrace::GetBacktrace(), CLOCK::now()});
+    }
     --Busy;
   }
 

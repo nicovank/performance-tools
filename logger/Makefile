@@ -10,6 +10,10 @@ all: vendor logger.cpp
 	$(CXX) $(CXXFLAGS) -c logger.cpp -o $(BUILD_DIRECTORY)/liblogger.o
 	$(CXX) $(LDFLAGS) $(BUILD_DIRECTORY)/liblogger.o -o $(BUILD_DIRECTORY)/liblogger.so $(LDLIBS)
 
+.PHONY: format
+format:
+	clang-format -i logger.cpp Backtrace.hpp
+
 vendor:
 	mkdir vendor
 	cd vendor && git clone https://github.com/ianlancetaylor/libbacktrace.git
