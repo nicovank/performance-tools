@@ -35,7 +35,7 @@ std::string ToJson(std::vector<StackFrame> Trace) {
   for (int i = 1; i < Trace.size(); ++i) {
     OutputStream << ", " << ToJson(Trace[i]);
   }
-  OutputStream << " ]";
+  OutputStream << "]";
   return OutputStream.str();
 }
 

@@ -17,11 +17,6 @@
 
 #include "Backtrace.hpp"
 
-static CLOCK::time_point ProgramStartTime;
-static std::atomic_bool Ready{false};
-static thread_local int Busy{0};
-static std::ofstream OutputFile;
-
 size_t GetNextSampleCount() {
   static std::random_device Generator;
   static std::geometric_distribution<size_t> Distribution(1.0 / SAMPLING_RATE);
@@ -30,12 +25,19 @@ size_t GetNextSampleCount() {
 
 struct AllocationData {
   size_t Size;
-  std::vector<Backtrace::StackFrame> AllocationBacktrace;
+  std::vector<Backtrace::StackFrame> AllocationTrace;
   CLOCK::time_point AllocationTime;
 };
 
-std::unordered_map<void*, AllocationData> Cache;
-std::mutex CacheLock;
+static thread_local int Busy{0};
+static thread_local long long int SamplingCount = GetNextSampleCount();
+
+static CLOCK::time_point ProgramStartTime;
+static std::atomic_bool Ready{false};
+static std::ofstream OutputFile;
+
+static std::unordered_map<void*, AllocationData> Cache;
+static std::mutex CacheLock;
 
 class Initialization {
 public:
@@ -56,16 +58,29 @@ public:
                  << "\"AllocationTime\": "
                  << std::chrono::duration<double, TIME_RATIO>(Data.second.AllocationTime - ProgramStartTime).count()
                  << ", "
-                 << "\"AllocationBacktrace\": " << Backtrace::ToJson(Data.second.AllocationBacktrace) << "}"
-                 << std::endl;
+                 << "\"AllocationTrace\": " << Backtrace::ToJson(Data.second.AllocationTrace) << "}" << std::endl;
     }
   }
 };
 
 static Initialization _;
 
+void LogObject(void* Pointer, size_t Size, CLOCK::time_point AllocationTime,
+               std::vector<Backtrace::StackFrame> AllocationTrace, CLOCK::time_point FreeTime,
+               std::vector<Backtrace::StackFrame> FreeTrace) {
+
+  OutputFile << "{ "
+             << "\"Address\": " << (intptr_t) Pointer << ", "
+             << "\"Size\": " << Size << ", "
+             << "\"AllocationTime\": "
+             << std::chrono::duration<double, TIME_RATIO>(AllocationTime - ProgramStartTime).count() << ", "
+             << "\"AllocationTrace\": " << Backtrace::ToJson(AllocationTrace) << ", "
+             << "\"FreeTime\": " << std::chrono::duration<double, TIME_RATIO>(FreeTime - ProgramStartTime).count()
+             << ", "
+             << "\"FreeTrace\": " << Backtrace::ToJson(FreeTrace) << "}" << std::endl;
+}
+
 extern "C" ATTRIBUTE_EXPORT void* malloc(size_t Size) noexcept {
-  static thread_local long int SamplingCount = GetNextSampleCount();
   static decltype(::malloc)* DefaultMalloc = (decltype(::malloc)*) dlsym(RTLD_NEXT, "malloc");
 
   void* Pointer = (*DefaultMalloc)(Size);
@@ -76,7 +91,7 @@ extern "C" ATTRIBUTE_EXPORT void* malloc(size_t Size) noexcept {
     if (SamplingCount <= 0) {
       SamplingCount = GetNextSampleCount();
       std::lock_guard<std::mutex> _(CacheLock);
-      Cache.emplace(Pointer, AllocationData{Size, Backtrace::GetBacktrace(), CLOCK::now()});
+      Cache[Pointer] = AllocationData{Size, Backtrace::GetBacktrace(), CLOCK::now()};
     }
     --Busy;
   }
@@ -94,19 +109,51 @@ extern "C" ATTRIBUTE_EXPORT void free(void* Pointer) {
     if (Cache.contains(Pointer)) {
       AllocationData Data = Cache[Pointer];
       Cache.erase(Pointer);
-      OutputFile << "{ "
-                 << "\"Address\": " << (intptr_t) Pointer << ", "
-                 << "\"Size\": " << Data.Size << ", "
-                 << "\"AllocationTime\": "
-                 << std::chrono::duration<double, TIME_RATIO>(Data.AllocationTime - ProgramStartTime).count() << ", "
-                 << "\"AllocationBacktrace\": " << Backtrace::ToJson(Data.AllocationBacktrace) << ", "
-                 << "\"FreeTime\": "
-                 << std::chrono::duration<double, TIME_RATIO>(CLOCK::now() - ProgramStartTime).count() << ", "
-                 << "\"FreeBacktrace\": " << Backtrace::ToJson(Backtrace::GetBacktrace()) << "}" << std::endl;
+      LogObject(Pointer, Data.Size, Data.AllocationTime, Data.AllocationTrace, CLOCK::now(), Backtrace::GetBacktrace());
     }
 
     --Busy;
   }
 
   (*DefaultFree)(Pointer);
+}
+
+extern "C" ATTRIBUTE_EXPORT void* calloc(size_t NElements, size_t Size) noexcept {
+  static decltype(::calloc)* DefaultCalloc = (decltype(::calloc)*) dlsym(RTLD_NEXT, "calloc");
+
+  void* Pointer = (*DefaultCalloc)(NElements, Size);
+
+  if (Ready && !Busy) {
+    ++Busy;
+    SamplingCount -= NElements * Size;
+    if (SamplingCount <= 0) {
+      SamplingCount = GetNextSampleCount();
+      std::lock_guard<std::mutex> _(CacheLock);
+      Cache[Pointer] = AllocationData{NElements * Size, Backtrace::GetBacktrace(), CLOCK::now()};
+    }
+    --Busy;
+  }
+
+  return Pointer;
+}
+
+extern "C" ATTRIBUTE_EXPORT void* realloc(void* Pointer, size_t Size) noexcept {
+  static decltype(::realloc)* DefaultRealloc = (decltype(::realloc)*) dlsym(RTLD_NEXT, "realloc");
+
+  void* NewPointer = (*DefaultRealloc)(Pointer, Size);
+
+  if (Ready && !Busy) {
+    ++Busy;
+    std::lock_guard<std::mutex> _(CacheLock);
+    if (Cache.contains(Pointer)) {
+      AllocationData Data = Cache[Pointer];
+      Cache.erase(Pointer);
+      LogObject(Pointer, Data.Size, Data.AllocationTime, Data.AllocationTrace, CLOCK::now(), Backtrace::GetBacktrace());
+    }
+
+    Cache.emplace(NewPointer, AllocationData{Size, Backtrace::GetBacktrace(), CLOCK::now()});
+    --Busy;
+  }
+
+  return NewPointer;
 }
