@@ -9,33 +9,57 @@
 #define ATTRIBUTE_INLINE __attribute__((always_inline))
 
 #define LG_PARTITION_SIZE 16
-
 static const INT64 PARTITION_SIZE = 1 << LG_PARTITION_SIZE;
 
-using counter_t = unsigned long long;
-static std::unordered_map<ADDRINT, counter_t> Accesses; // TODO: Thread-local counters, add em up at the end.
+using BinMap = std::unordered_map<ADDRINT, unsigned long long>;
+static BinMap Accesses;
+static PIN_MUTEX Lock;
+static TLS_KEY TlsKey = INVALID_TLS_KEY;
 
 static std::ofstream OutputFile;
 static KNOB<std::string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool", "o", "heapmap.out", "specify output file name");
 
-inline ATTRIBUTE_INLINE VOID OnMemoryAccess(ADDRINT Pointer, UINT32 Size) {
-  ADDRINT MinBin = Pointer >> LG_PARTITION_SIZE;
-  ADDRINT MaxBin = (Pointer + Size) >> LG_PARTITION_SIZE;
-  for (ADDRINT Bin = MinBin; Bin <= MaxBin; ++Bin) {
-    ++Accesses[Bin];
+VOID OnThreadStart(THREADID ThreadId, CONTEXT* Context, INT32 Flags, VOID* _) {
+  std::cout << "Thread start!" << std::endl;
+  BinMap* ThreadData = new BinMap;
+  if (PIN_SetThreadData(TlsKey, ThreadData, ThreadId) == FALSE) {
+    std::cerr << "Failed PIN_SetThreadData." << std::endl;
+    PIN_ExitProcess(1);
   }
 }
 
-VOID OnMemoryRead(ADDRINT Pointer, UINT32 Size) { OnMemoryAccess(Pointer, Size); }
-VOID OnMemoryWrite(ADDRINT Pointer, UINT32 Size) { OnMemoryAccess(Pointer, Size); }
+VOID OnThreadEnd(THREADID ThreadId, const CONTEXT* Context, INT32 Code, VOID* _) {
+  std::cout << "Thread end!" << std::endl;
+  BinMap* ThreadData = static_cast<BinMap*>(PIN_GetThreadData(TlsKey, ThreadId));
+  PIN_MutexLock(&Lock);
+  for (std::pair<ADDRINT, unsigned long long> Counter : *ThreadData) {
+    Accesses[Counter.first] += Counter.second;
+  }
+  PIN_MutexUnlock(&Lock);
+  delete ThreadData;
+}
+
+inline ATTRIBUTE_INLINE VOID OnMemoryAccess(THREADID ThreadId, ADDRINT Pointer, UINT32 Size) {
+  BinMap ThreadData = *(static_cast<BinMap*>(PIN_GetThreadData(TlsKey, ThreadId)));
+  ADDRINT MinBin = Pointer >> LG_PARTITION_SIZE;
+  ADDRINT MaxBin = (Pointer + Size) >> LG_PARTITION_SIZE;
+  for (ADDRINT Bin = MinBin; Bin <= MaxBin; ++Bin) {
+    ++ThreadData[Bin];
+  }
+}
+
+VOID OnMemoryRead(THREADID ThreadId, ADDRINT Pointer, UINT32 Size) { OnMemoryAccess(ThreadId, Pointer, Size); }
+VOID OnMemoryWrite(THREADID ThreadId, ADDRINT Pointer, UINT32 Size) { OnMemoryAccess(ThreadId, Pointer, Size); }
 
 VOID OnProgramEnd(INT32 Code, VOID* _) {
+  PIN_MutexFini(&Lock);
+
   OutputFile << "{" << std::endl;
   OutputFile << '\t' << "\"LG_PARTITION_SIZE\": " << LG_PARTITION_SIZE << "," << std::endl;
   OutputFile << '\t' << "\"Bins\": [";
 
   if (!Accesses.empty()) {
-    std::vector<std::pair<ADDRINT, counter_t>> Counters(Accesses.begin(), Accesses.end());
+    std::vector<std::pair<ADDRINT, unsigned long long>> Counters(Accesses.begin(), Accesses.end());
     std::sort(Counters.begin(), Counters.end(), [](auto a, auto b) { return a.first < b.first; });
 
     OutputFile << Counters[0].second;
@@ -49,12 +73,12 @@ VOID OnProgramEnd(INT32 Code, VOID* _) {
 
 VOID Instruction(INS Instruction, VOID* _) {
   if (INS_IsMemoryRead(Instruction) && !INS_IsStackRead(Instruction)) {
-    INS_InsertCall(Instruction, IPOINT_BEFORE, (AFUNPTR) OnMemoryRead, IARG_MEMORYREAD_EA, IARG_MEMORYREAD_SIZE,
+    INS_InsertCall(Instruction, IPOINT_BEFORE, (AFUNPTR) OnMemoryRead, IARG_THREAD_ID, IARG_MEMORYREAD_EA, IARG_MEMORYREAD_SIZE,
                    IARG_END);
   }
 
   if (INS_IsMemoryWrite(Instruction) && !INS_IsStackWrite(Instruction)) {
-    INS_InsertCall(Instruction, IPOINT_BEFORE, (AFUNPTR) OnMemoryWrite, IARG_MEMORYWRITE_EA, IARG_MEMORYWRITE_SIZE,
+    INS_InsertCall(Instruction, IPOINT_BEFORE, (AFUNPTR) OnMemoryWrite, IARG_THREAD_ID, IARG_MEMORYWRITE_EA, IARG_MEMORYWRITE_SIZE,
                    IARG_END);
   }
 }
@@ -73,7 +97,20 @@ int main(int argc, char* argv[]) {
 
   OutputFile.open(KnobOutputFile.Value().c_str());
 
+  TlsKey = PIN_CreateThreadDataKey(nullptr);
+  if (TlsKey == INVALID_TLS_KEY) {
+    std::cerr << "Failed PIN_CreateThreadDataKey." << std::endl;
+    PIN_ExitProcess(1);
+  }
+
+  if (!PIN_MutexInit(&Lock)) {
+    std::cerr << "Failed PIN_MutexInit." << std::endl;
+    PIN_ExitProcess(1);
+  }
+
   INS_AddInstrumentFunction(Instruction, nullptr);
+  PIN_AddThreadStartFunction(OnThreadStart, nullptr);
+  PIN_AddThreadFiniFunction(OnThreadEnd, nullptr);
   PIN_AddFiniFunction(OnProgramEnd, nullptr);
 
   PIN_StartProgram();
