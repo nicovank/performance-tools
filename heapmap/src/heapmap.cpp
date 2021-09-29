@@ -30,14 +30,21 @@ VOID OnMemoryRead(ADDRINT Pointer, UINT32 Size) { OnMemoryAccess(Pointer, Size);
 VOID OnMemoryWrite(ADDRINT Pointer, UINT32 Size) { OnMemoryAccess(Pointer, Size); }
 
 VOID OnProgramEnd(INT32 Code, VOID* _) {
-  OutputFile << "LG_PARTITION_SIZE " << LG_PARTITION_SIZE << std::endl;
+  OutputFile << "{" << std::endl;
+  OutputFile << '\t' << "\"LG_PARTITION_SIZE\": " << LG_PARTITION_SIZE << "," << std::endl;
+  OutputFile << '\t' << "\"Bins\": [";
 
-  std::vector<std::pair<ADDRINT, counter_t>> Counters(Accesses.begin(), Accesses.end());
-  std::sort(Counters.begin(), Counters.end(), [](auto a, auto b) { return a.first < b.first; });
+  if (!Accesses.empty()) {
+    std::vector<std::pair<ADDRINT, counter_t>> Counters(Accesses.begin(), Accesses.end());
+    std::sort(Counters.begin(), Counters.end(), [](auto a, auto b) { return a.first < b.first; });
 
-  for (auto Counter : Counters) { // TODO: pad with 0s when there are gaps?
-    OutputFile << Counter.second << std::endl;
+    OutputFile << Counters[0].second;
+    for (size_t i = 1; i < Counters.size(); ++i) { // TODO: pad with 0s when there are gaps?
+      OutputFile << ", " << Counters[i].second;
+    }
   }
+
+  OutputFile << "]" << std::endl << "}" << std::endl;
 }
 
 VOID Instruction(INS Instruction, VOID* _) {
