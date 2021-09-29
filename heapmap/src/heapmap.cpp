@@ -8,7 +8,7 @@
 
 #define ATTRIBUTE_INLINE __attribute__((always_inline))
 
-#define LG_PARTITION_SIZE 8
+#define LG_PARTITION_SIZE 16
 
 static const INT64 PARTITION_SIZE = 1 << LG_PARTITION_SIZE;
 
