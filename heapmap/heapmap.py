@@ -26,7 +26,7 @@ for sample in data["Bins"]:
 
 square_size = IMAGE_WIDTH / n
 image_height = math.ceil(m * square_size)
-image = Image.new('RGB', (IMAGE_WIDTH, image_height), (255, 255, 255))
+image = Image.new('RGB', (IMAGE_WIDTH + 1, image_height + 1), (255, 255, 255))
 draw = ImageDraw.Draw(image)
 
 for i in range(n):
