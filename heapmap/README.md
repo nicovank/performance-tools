@@ -3,7 +3,9 @@
 This is an [Intel Pin](https://software.intel.com/content/www/us/en/develop/articles/pin-a-dynamic-binary-instrumentation-tool.html)
 based tool to generate a heatmap of memory accesses on the heap.
 
-![HeapMap Example](example.jpg)
+<p align="center">
+  <img src="example.jpg" alt="HeapMap Example" width="200" />
+</p>
 
 ## Instructions
 
